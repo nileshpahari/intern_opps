@@ -22,6 +22,8 @@ SOURCES (12):
 └── HACKATHONS
     ├── HackerEarth API     → Hackathons + hiring challenges
     └── Devpost API         → International hackathons
+GITHUB REPOS (community-maintained, structured JSON):
+    └── SimplifyJobs/Summer2026-Internships → tech internships (no scraping!)
          ↓
     Fetch new listings (~170/run)
          ↓

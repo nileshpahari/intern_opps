@@ -500,6 +500,75 @@ def fetch_devpost_hackathons():
 
 
 # ============================================================
+# SOURCE: Community GitHub repos (structured JSON, no scraping/Cloudflare)
+# ============================================================
+
+def fetch_github_internships():
+    """Fetch internships from community-maintained GitHub repos (Simplify listings).
+
+    These repos store a clean listings.json that is updated continuously via PRs.
+    Fetched from raw.githubusercontent.com (no JS, no Cloudflare). We only keep
+    recently-updated, active roles and drop US-citizenship-only ones.
+    """
+    print("[INFO] Fetching internships from community GitHub repos...")
+    opportunities = []
+
+    repos = [
+        ("SimplifyJobs/Summer2026-Internships",
+         "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/.github/scripts/listings.json"),
+    ]
+
+    recent_window = 5 * 86400  # only roles updated in the last 5 days
+    now = time.time()
+
+    for repo_name, url in repos:
+        content = fetch_url(url)
+        if not content:
+            continue
+        try:
+            listings = json.loads(content)
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] {repo_name} JSON error: {e}")
+            continue
+
+        count = 0
+        for item in listings:
+            if not item.get("active", False):
+                continue
+            # Skip roles that require US citizenship (not applicable to the user)
+            if item.get("sponsorship", "") == "U.S. Citizenship is Required":
+                continue
+            # Only recently updated roles (dedup + recency keeps volume sane)
+            updated = item.get("date_updated", 0)
+            if now - updated > recent_window:
+                continue
+
+            company = (item.get("company_name") or "").strip()
+            role = (item.get("title") or "").strip()
+            url_apply = (item.get("url") or "").strip()
+            if not (company and role and url_apply):
+                continue
+
+            locations = item.get("locations") or []
+            loc = ", ".join(locations[:2]) if locations else ""
+            cat = item.get("category", "")
+
+            opportunities.append({
+                "source": "GitHub/Simplify",
+                "category": "INTERNSHIP",
+                "title": f"{role} @ {company}",
+                "link": url_apply,
+                "description": f"{cat} | {loc}" if loc else cat,
+                "date": datetime.fromtimestamp(updated).strftime("%Y-%m-%d") if updated else ""
+            })
+            count += 1
+
+        print(f"[INFO] Found {count} recent internships from {repo_name}")
+
+    return opportunities
+
+
+# ============================================================
 # LLM CLASSIFICATION (Groq - free tier, llama-3.1-8b-instant)
 # ============================================================
 
@@ -759,6 +828,9 @@ def main():
 
     # Devpost (International hackathons)
     all_opportunities.extend(fetch_devpost_hackathons())
+
+    # Community GitHub repos (structured JSON internship listings)
+    all_opportunities.extend(fetch_github_internships())
 
     print(f"\n{'='*60}")
     print(f"[INFO] TOTAL FETCHED: {len(all_opportunities)}")

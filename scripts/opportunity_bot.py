@@ -619,6 +619,71 @@ def fetch_speedyapply_intl():
 
 
 # ============================================================
+# SOURCE: foundit.in (internships via JSON search API)
+# ============================================================
+
+def fetch_foundit():
+    """Fetch internships from foundit.in's job search API (JSON).
+
+    foundit (formerly Monster India) exposes a middleware search API that returns
+    clean JSON when called with browser headers. We query several tech terms and
+    dedupe; recency is handled by the global seen.json dedup.
+    """
+    print("[INFO] Fetching internships from foundit.in...")
+    opportunities = []
+
+    queries = [
+        "software developer intern",
+        "machine learning intern",
+        "data science intern",
+        "AI intern",
+        "backend developer intern",
+    ]
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.foundit.in/search/jobs",
+    }
+
+    seen_ids = set()
+    for q in queries:
+        url = ("https://www.foundit.in/middleware/jobsearch?start=0&limit=12&query="
+               + urllib.parse.quote(q))
+        content = fetch_url(url, headers=headers)
+        if not content:
+            continue
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+
+        for j in data.get("jobSearchResponse", {}).get("data", []):
+            jid = j.get("jobId")
+            if jid in seen_ids:
+                continue
+            seen_ids.add(jid)
+
+            title = (j.get("title") or "").strip()
+            company = (j.get("companyName") or "").strip()
+            locations = (j.get("locations") or "").strip()
+            seo = j.get("seoJdUrl") or ""
+            link = ("https://www.foundit.in" + seo) if seo else (j.get("redirectUrl") or "")
+            if not (title and link):
+                continue
+
+            opportunities.append({
+                "source": "foundit.in",
+                "category": "INTERNSHIP",
+                "title": f"{title} @ {company}" if company else title,
+                "link": link,
+                "description": locations,
+                "date": ""
+            })
+
+    print(f"[INFO] Found {len(opportunities)} internships from foundit.in")
+    return opportunities
+
+
+# ============================================================
 # LLM CLASSIFICATION (Groq - free tier, llama-3.1-8b-instant)
 # ============================================================
 
@@ -894,6 +959,9 @@ def main():
     # Community GitHub repos (structured JSON internship listings)
     all_opportunities.extend(fetch_github_internships())
     all_opportunities.extend(fetch_speedyapply_intl())
+
+    # foundit.in (job board API - tech internships)
+    all_opportunities.extend(fetch_foundit())
 
     print(f"\n{'='*60}")
     print(f"[INFO] TOTAL FETCHED: {len(all_opportunities)}")

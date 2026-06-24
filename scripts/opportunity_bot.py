@@ -1,0 +1,689 @@
+"""
+Unified Opportunity Bot
+-----------------------
+Fetches opportunities from multiple sources, classifies relevance using
+Groq LLM, and sends matches to Telegram.
+
+WORKING SOURCES:
+1. FreeJobAlert RSS - Government jobs (verified working)
+2. Unstop API - Scholarships, Internships, Hackathons, Competitions (verified working)
+3. Devpost API - International Hackathons (verified working)
+
+Requires env vars:
+- TELEGRAM_BOT_TOKEN
+- TELEGRAM_CHAT_ID
+- GROQ_API_KEY
+"""
+
+import os
+import json
+import hashlib
+import time
+import re
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
+from datetime import datetime
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+
+SEEN_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "seen.json")
+
+# Your profile - LLM uses this to judge relevance
+USER_PROFILE = """
+- 3rd year B.Tech CSE student (entering 5th semester)
+- College: JIS College of Engineering, West Bengal
+- Home state: Bihar
+- CGPA: 8.7/10
+- Interests: AI/ML, Computer Vision, Edge AI (Jetson), Agentic AI, LLMs, Deep Learning
+- Skills: Python, C++, FastAPI, Docker, YOLO, PyTorch, LangChain
+- Currently doing: FAST-SF fellowship at NIT Puducherry (edge AI surveillance)
+- Looking for: Government jobs (technical/IT cadre), internships (AI/ML/software),
+  scholarships, fellowships, hackathons, research opportunities, competitions
+- NOT interested in: MBA, law, medical, agriculture, arts/humanities-only roles,
+  sales/marketing/HR internships, content writing roles
+"""
+
+# ============================================================
+# UTILITIES
+# ============================================================
+
+def load_seen():
+    """Load previously seen opportunity hashes."""
+    try:
+        with open(SEEN_FILE, "r") as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+
+def save_seen(seen_set):
+    """Save seen hashes to file."""
+    os.makedirs(os.path.dirname(SEEN_FILE), exist_ok=True)
+    with open(SEEN_FILE, "w") as f:
+        json.dump(list(seen_set), f)
+
+
+def make_hash(text):
+    """Create a unique hash for deduplication."""
+    return hashlib.md5(text.encode()).hexdigest()
+
+
+def fetch_url(url, headers=None):
+    """Fetch URL content with basic error handling."""
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+    if headers:
+        for k, v in headers.items():
+            req.add_header(k, v)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch {url}: {e}")
+        return ""
+
+
+def send_telegram(message):
+    """Send a message to Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[WARN] Telegram credentials not set. Printing instead:")
+        print(message)
+        print()
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = urllib.parse.urlencode({
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": "true"
+    }).encode()
+
+    try:
+        req = urllib.request.Request(url, data=data)
+        urllib.request.urlopen(req, timeout=15)
+        time.sleep(1)  # Rate limit: 1 msg/sec
+    except Exception as e:
+        print(f"[ERROR] Telegram send failed: {e}")
+
+
+# ============================================================
+# SOURCE 1: FreeJobAlert RSS (Government Jobs)
+# ============================================================
+
+def fetch_govt_jobs():
+    """Fetch latest govt job notifications from FreeJobAlert RSS."""
+    print("[INFO] Fetching government jobs from FreeJobAlert RSS...")
+    opportunities = []
+
+    xml_content = fetch_url("https://www.freejobalert.com/feed")
+    if not xml_content:
+        return opportunities
+
+    try:
+        root = ET.fromstring(xml_content)
+        channel = root.find("channel")
+        if channel is None:
+            return opportunities
+
+        for item in channel.findall("item")[:25]:
+            title = item.findtext("title", "").strip()
+            link = item.findtext("link", "").strip()
+            desc = item.findtext("description", "").strip()
+            pub_date = item.findtext("pubDate", "").strip()
+
+            # Clean HTML from description
+            desc = re.sub(r'<[^>]+>', '', desc)[:200]
+
+            if title and link:
+                opportunities.append({
+                    "source": "FreeJobAlert",
+                    "category": "GOV JOB",
+                    "title": title,
+                    "link": link,
+                    "description": desc,
+                    "date": pub_date
+                })
+    except ET.ParseError as e:
+        print(f"[ERROR] RSS parse error: {e}")
+
+    print(f"[INFO] Found {len(opportunities)} govt job listings")
+    return opportunities
+
+
+# ============================================================
+# SOURCE 2: Unstop API (Scholarships, Internships, Hackathons, Competitions)
+# ============================================================
+
+def fetch_unstop(category, label):
+    """Fetch opportunities from Unstop public API."""
+    print(f"[INFO] Fetching {label} from Unstop...")
+    opportunities = []
+
+    url = f"https://unstop.com/api/public/opportunity/search-new?opportunity={category}&per_page=20&oppstatus=open"
+    content = fetch_url(url, headers={"Accept": "application/json"})
+    if not content:
+        return opportunities
+
+    try:
+        data = json.loads(content)
+        items = data.get("data", {}).get("data", [])
+
+        for item in items:
+            title = item.get("title", "").strip()
+            public_url = item.get("public_url", "")
+            link = f"https://unstop.com/{public_url}" if public_url else ""
+            subtype = item.get("subtype", "")
+            region = item.get("region", "")
+            created = item.get("created_at", "")
+
+            # Get details if available
+            details = item.get("details", {})
+            desc = ""
+            if isinstance(details, dict):
+                desc = details.get("short_desc", "") or details.get("description", "")
+                desc = re.sub(r'<[^>]+>', '', desc)[:200]
+
+            if title and link:
+                opportunities.append({
+                    "source": "Unstop",
+                    "category": label,
+                    "title": title,
+                    "link": link,
+                    "description": desc or f"Type: {subtype} | Region: {region}",
+                    "date": created[:10] if created else ""
+                })
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"[ERROR] Unstop {category} error: {e}")
+
+    print(f"[INFO] Found {len(opportunities)} {label} listings from Unstop")
+    return opportunities
+
+
+def fetch_unstop_scholarships():
+    return fetch_unstop("scholarships", "SCHOLARSHIP")
+
+
+def fetch_unstop_internships():
+    return fetch_unstop("internships", "INTERNSHIP")
+
+
+def fetch_unstop_hackathons():
+    return fetch_unstop("hackathons", "HACKATHON")
+
+
+def fetch_unstop_competitions():
+    return fetch_unstop("competitions", "COMPETITION")
+
+
+# ============================================================
+# SOURCE 3: ScholarshipsInIndia RSS (Scholarships)
+# ============================================================
+
+def fetch_scholarshipsinindia():
+    """Fetch scholarships from ScholarshipsInIndia.com RSS feed."""
+    print("[INFO] Fetching scholarships from ScholarshipsInIndia...")
+    opportunities = []
+
+    xml_content = fetch_url("https://www.scholarshipsinindia.com/feed")
+    if not xml_content:
+        return opportunities
+
+    try:
+        root = ET.fromstring(xml_content)
+        channel = root.find("channel")
+        if channel is None:
+            return opportunities
+
+        for item in channel.findall("item")[:15]:
+            title = item.findtext("title", "").strip()
+            link = item.findtext("link", "").strip()
+            desc = item.findtext("description", "").strip()
+            pub_date = item.findtext("pubDate", "").strip()
+
+            # Clean HTML from description
+            desc = re.sub(r'<[^>]+>', '', desc)[:200]
+
+            if title and link:
+                opportunities.append({
+                    "source": "ScholarshipsInIndia",
+                    "category": "SCHOLARSHIP",
+                    "title": title,
+                    "link": link,
+                    "description": desc,
+                    "date": pub_date
+                })
+    except ET.ParseError as e:
+        print(f"[ERROR] ScholarshipsInIndia RSS parse error: {e}")
+
+    print(f"[INFO] Found {len(opportunities)} scholarship listings from ScholarshipsInIndia")
+    return opportunities
+
+
+# ============================================================
+# SOURCE 4: JagranJosh (Government Jobs / Exam News - HTML scrape)
+# ============================================================
+
+def fetch_jagranjosh():
+    """Scrape latest govt job / recruitment listings from JagranJosh jobs page."""
+    print("[INFO] Fetching govt jobs from JagranJosh...")
+    opportunities = []
+
+    html = fetch_url("https://www.jagranjosh.com/jobs")
+    if not html:
+        return opportunities
+
+    # Extract article links with their titles
+    pattern = re.findall(
+        r'href="(https://www\.jagranjosh\.com/articles/[a-z0-9\-]+)"[^>]*>([^<]{15,100})',
+        html
+    )
+
+    seen_links = set()
+    # Keywords that indicate an actual job/recruitment (filter out result/admit-card noise)
+    job_keywords = ["recruitment", "notification", "vacancy", "apply", "bharti",
+                    "posts", "form", "hiring", "jobs"]
+
+    for link, title in pattern:
+        if link in seen_links:
+            continue
+        seen_links.add(link)
+
+        title = title.replace("&amp;", "&").strip()
+        title_lower = title.lower()
+
+        # Only keep recruitment/job-type articles
+        if any(kw in title_lower or kw in link.lower() for kw in job_keywords):
+            opportunities.append({
+                "source": "JagranJosh",
+                "category": "GOV JOB",
+                "title": title,
+                "link": link,
+                "description": "",
+                "date": ""
+            })
+
+    print(f"[INFO] Found {len(opportunities)} govt job listings from JagranJosh")
+    return opportunities
+
+
+# ============================================================
+# GENERIC RSS FETCHER (for global opportunity aggregators)
+# ============================================================
+
+def detect_category(title, categories):
+    """Infer opportunity category from title + RSS category tags."""
+    text = (title + " " + " ".join(categories)).lower()
+    # Order matters - most specific first
+    if any(k in text for k in ["fellowship", "fellow "]):
+        return "FELLOWSHIP"
+    if any(k in text for k in ["scholarship", "scholar ", "study in", "masters", "phd scholar"]):
+        return "SCHOLARSHIP"
+    if any(k in text for k in ["internship", "intern "]):
+        return "INTERNSHIP"
+    if any(k in text for k in ["hackathon"]):
+        return "HACKATHON"
+    if any(k in text for k in ["competition", "contest", "award", "challenge", "prize"]):
+        return "COMPETITION"
+    if any(k in text for k in ["job", "recruitment", "vacancy", "consultant", "career"]):
+        return "GOV JOB"
+    return "OPPORTUNITY"
+
+
+def fetch_generic_rss(url, source_name, limit=12):
+    """Fetch and categorize opportunities from a generic RSS feed."""
+    print(f"[INFO] Fetching opportunities from {source_name}...")
+    opportunities = []
+
+    xml_content = fetch_url(url)
+    if not xml_content:
+        return opportunities
+
+    try:
+        root = ET.fromstring(xml_content)
+        channel = root.find("channel")
+        if channel is None:
+            return opportunities
+
+        for item in channel.findall("item")[:limit]:
+            title = item.findtext("title", "").strip()
+            link = item.findtext("link", "").strip()
+            desc = item.findtext("description", "").strip()
+            pub_date = item.findtext("pubDate", "").strip()
+            categories = [c.text for c in item.findall("category") if c.text]
+
+            desc = re.sub(r'<[^>]+>', '', desc)[:180]
+
+            if title and link:
+                opportunities.append({
+                    "source": source_name,
+                    "category": detect_category(title, categories),
+                    "title": title,
+                    "link": link,
+                    "description": desc,
+                    "date": pub_date
+                })
+    except ET.ParseError as e:
+        print(f"[ERROR] {source_name} RSS parse error: {e}")
+
+    print(f"[INFO] Found {len(opportunities)} listings from {source_name}")
+    return opportunities
+
+
+# ============================================================
+# SOURCE 6: HackerEarth (Hackathons + Hiring Challenges)
+# ============================================================
+
+def fetch_hackerearth():
+    """Fetch hackathons and hiring challenges from HackerEarth events API."""
+    print("[INFO] Fetching hackathons from HackerEarth...")
+    opportunities = []
+
+    content = fetch_url(
+        "https://www.hackerearth.com/chrome-extension/events/",
+        headers={"Accept": "application/json"}
+    )
+    if not content:
+        return opportunities
+
+    try:
+        data = json.loads(content)
+        events = data.get("response", [])
+
+        for e in events:
+            title = e.get("title", "").strip()
+            link = e.get("url", "").strip()
+            end = e.get("end_tz", "") or e.get("end", "")
+
+            if not (title and link):
+                continue
+
+            # Categorize by URL pattern
+            low = link.lower()
+            if "hiring" in low or "competitive" in low:
+                category = "COMPETITION"
+            else:
+                category = "HACKATHON"
+
+            opportunities.append({
+                "source": "HackerEarth",
+                "category": category,
+                "title": title,
+                "link": link,
+                "description": "",
+                "date": end[:10] if end else ""
+            })
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] HackerEarth JSON error: {e}")
+
+    print(f"[INFO] Found {len(opportunities)} listings from HackerEarth")
+    return opportunities
+
+
+# ============================================================
+# SOURCE 7: Devpost (International Hackathons)
+# ============================================================
+
+def fetch_devpost_hackathons():
+    """Fetch upcoming hackathons from Devpost API."""
+    print("[INFO] Fetching international hackathons from Devpost...")
+    opportunities = []
+
+    url = "https://devpost.com/api/hackathons?status[]=upcoming&status[]=open"
+    content = fetch_url(url, headers={"Accept": "application/json"})
+    if not content:
+        return opportunities
+
+    try:
+        data = json.loads(content)
+        hackathons = data.get("hackathons", [])
+
+        for h in hackathons[:15]:
+            title = h.get("title", "").strip()
+            link = h.get("url", "").strip()
+            desc = h.get("tagline", "") or ""
+            deadline = h.get("submission_period_dates", "")
+            prizes = h.get("prize_amount", "")
+
+            if title and link:
+                description = desc[:150]
+                if prizes:
+                    description += f" | Prize: {prizes}"
+
+                opportunities.append({
+                    "source": "Devpost",
+                    "category": "HACKATHON",
+                    "title": title,
+                    "link": link,
+                    "description": description,
+                    "date": deadline
+                })
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Devpost JSON error: {e}")
+
+    print(f"[INFO] Found {len(opportunities)} hackathon listings from Devpost")
+    return opportunities
+
+
+# ============================================================
+# LLM CLASSIFICATION (Groq - free tier, llama-3.1-8b-instant)
+# ============================================================
+
+def classify_with_llm(opportunities):
+    """Use Groq LLM to filter relevant opportunities based on user profile."""
+    if not GROQ_API_KEY:
+        print("[WARN] No GROQ_API_KEY set. Skipping LLM classification, sending all.")
+        return opportunities
+
+    if not opportunities:
+        return []
+
+    print(f"[INFO] Classifying {len(opportunities)} opportunities with Groq LLM...")
+
+    relevant = []
+    batch_size = 15
+
+    for i in range(0, len(opportunities), batch_size):
+        batch = opportunities[i:i + batch_size]
+
+        listings_text = ""
+        for idx, opp in enumerate(batch):
+            listings_text += f"\n{idx+1}. [{opp['category']}] {opp['title']}"
+            if opp['description']:
+                listings_text += f" - {opp['description'][:100]}"
+
+        prompt = f"""You are a career opportunity classifier for an Indian engineering student.
+Given the student profile and a list of opportunities, return ONLY the numbers of 
+opportunities that are RELEVANT to this specific student.
+
+STUDENT PROFILE:
+{USER_PROFILE}
+
+OPPORTUNITIES:
+{listings_text}
+
+CLASSIFICATION RULES:
+- RELEVANT: CS/IT/AI/ML/tech related jobs, internships in software/AI/data science,
+  engineering scholarships, tech hackathons, coding competitions, research fellowships
+- RELEVANT: Government IT/tech positions (even if seem senior - good to track early)
+- RELEVANT: General engineering scholarships the student is eligible for
+- NOT RELEVANT: MBA/law/medical/agriculture/arts-only roles
+- NOT RELEVANT: Sales, marketing, HR, content writing, video editing internships
+- NOT RELEVANT: Scholarships restricted to categories student doesn't belong to
+- NOT RELEVANT: Positions requiring qualifications student doesn't have (PG, PhD)
+
+Return ONLY relevant opportunity numbers as a comma-separated list (e.g., "1,3,5,7")
+If NONE are relevant, return exactly "NONE"
+
+RELEVANT NUMBERS:"""
+
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        payload = json.dumps({
+            "model": "llama-3.1-8b-instant",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens": 100
+        })
+
+        req = urllib.request.Request(url, data=payload.encode())
+        req.add_header("Authorization", f"Bearer {GROQ_API_KEY}")
+        req.add_header("Content-Type", "application/json")
+
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read().decode())
+                answer = result["choices"][0]["message"]["content"].strip()
+                print(f"[INFO] LLM batch {i//batch_size + 1} response: {answer}")
+
+                if answer.upper() == "NONE":
+                    continue
+
+                # Parse numbers from response
+                numbers = re.findall(r'\d+', answer)
+                for num_str in numbers:
+                    idx = int(num_str) - 1
+                    if 0 <= idx < len(batch):
+                        relevant.append(batch[idx])
+
+        except Exception as e:
+            print(f"[ERROR] Groq API error: {e}")
+            # On failure, include all from this batch (better to over-notify than miss)
+            relevant.extend(batch)
+
+        time.sleep(2)  # Rate limiting between batches (free tier is strict)
+
+    print(f"[INFO] LLM classified {len(relevant)} as relevant out of {len(opportunities)} total")
+    return relevant
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def format_message(opp):
+    """Format a single opportunity for Telegram."""
+    emoji_map = {
+        "GOV JOB": "\U0001f3db\ufe0f",
+        "SCHOLARSHIP": "\U0001f393",
+        "FELLOWSHIP": "\U0001f52c",
+        "HACKATHON": "\U0001f680",
+        "INTERNSHIP": "\U0001f4bc",
+        "COMPETITION": "\U0001f3c6",
+    }
+    emoji = emoji_map.get(opp["category"], "\U0001f4cc")
+
+    msg = f"{emoji} <b>[{opp['category']}]</b>\n"
+    msg += f"<b>{opp['title']}</b>\n"
+    if opp["description"]:
+        # Escape HTML entities
+        desc = opp["description"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        msg += f"{desc[:150]}\n"
+    if opp["date"]:
+        msg += f"\U0001f4c5 {opp['date']}\n"
+    msg += f"\U0001f517 <a href=\"{opp['link']}\">Apply / Details</a>\n"
+    msg += f"<i>via {opp['source']}</i>"
+    return msg
+
+
+def main():
+    print("=" * 60)
+    print(f"  OPPORTUNITY BOT RUN: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 60)
+
+    # Load previously seen
+    seen = load_seen()
+    print(f"[INFO] Previously seen: {len(seen)} opportunities")
+
+    # ---- Fetch from all sources ----
+    all_opportunities = []
+
+    # Government Jobs
+    all_opportunities.extend(fetch_govt_jobs())
+    all_opportunities.extend(fetch_jagranjosh())
+
+    # Unstop (India's biggest platform - scholarships, internships, hackathons, competitions)
+    all_opportunities.extend(fetch_unstop_scholarships())
+    all_opportunities.extend(fetch_unstop_internships())
+    all_opportunities.extend(fetch_unstop_hackathons())
+    all_opportunities.extend(fetch_unstop_competitions())
+
+    # ScholarshipsInIndia (extra scholarship coverage)
+    all_opportunities.extend(fetch_scholarshipsinindia())
+
+    # Global opportunity aggregators (fellowships, scholarships, internships worldwide)
+    all_opportunities.extend(fetch_generic_rss(
+        "https://opportunitiesforyouth.org/feed/", "OpportunitiesForYouth"))
+    all_opportunities.extend(fetch_generic_rss(
+        "https://opportunitiescircle.com/feed/", "OpportunitiesCircle"))
+    all_opportunities.extend(fetch_generic_rss(
+        "https://opportunitydesk.org/feed/", "OpportunityDesk"))
+    all_opportunities.extend(fetch_generic_rss(
+        "https://scholarshiproar.com/feed/", "ScholarshipRoar"))
+    all_opportunities.extend(fetch_generic_rss(
+        "https://opportunitycell.com/feed/", "OpportunityCell"))
+    all_opportunities.extend(fetch_generic_rss(
+        "https://oyaop.com/feed/", "Oyaop"))
+
+    # HackerEarth (hackathons + hiring challenges)
+    all_opportunities.extend(fetch_hackerearth())
+
+    # Devpost (International hackathons)
+    all_opportunities.extend(fetch_devpost_hackathons())
+
+    print(f"\n{'='*60}")
+    print(f"[INFO] TOTAL FETCHED: {len(all_opportunities)}")
+    print(f"{'='*60}")
+
+    # ---- Deduplicate against seen ----
+    new_opportunities = []
+    for opp in all_opportunities:
+        h = make_hash(opp["title"] + opp["link"])
+        if h not in seen:
+            new_opportunities.append(opp)
+            seen.add(h)
+
+    print(f"[INFO] New (unseen): {len(new_opportunities)}")
+
+    if not new_opportunities:
+        print("[INFO] No new opportunities found. Exiting.")
+        save_seen(seen)
+        return
+
+    # ---- Classify with LLM ----
+    relevant = classify_with_llm(new_opportunities)
+    print(f"[INFO] Relevant after LLM filter: {len(relevant)}")
+
+    if not relevant:
+        print("[INFO] No relevant opportunities after filtering. Exiting.")
+        save_seen(seen)
+        return
+
+    # ---- Send to Telegram ----
+    header = f"\U0001f514 <b>New Opportunities Found!</b>\n"
+    header += f"\U0001f4ca {len(relevant)} relevant out of {len(new_opportunities)} new listings\n"
+    header += f"\U0001f4c6 {datetime.now().strftime('%d %b %Y, %I:%M %p')}"
+    send_telegram(header)
+
+    # Send max 12 per run to avoid Telegram rate limits
+    for opp in relevant[:12]:
+        msg = format_message(opp)
+        send_telegram(msg)
+
+    if len(relevant) > 12:
+        send_telegram(f"\u2795 ...and {len(relevant) - 12} more. Run again or check sources directly!")
+
+    # ---- Save updated seen list ----
+    save_seen(seen)
+    print(f"\n[DONE] Sent {min(len(relevant), 12)} notifications to Telegram.")
+    print(f"[DONE] Total tracked: {len(seen)} opportunities")
+
+
+if __name__ == "__main__":
+    main()

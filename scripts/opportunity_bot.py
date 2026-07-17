@@ -44,15 +44,17 @@ SEEN_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "seen.json")
 
 # Your profile - LLM uses this to judge relevance
 USER_PROFILE = """
-- 3rd year B.Tech CSE student (entering 5th semester)
+- 3rd year B.Tech CSE student (5th semester)
 - College: Haldia Institute of Technology, West Bengal
-- Home state: Bihar
-- CGPA: 8.7/10
-- Interests: AI/ML, Computer Vision, Edge AI (Jetson), Agentic AI, LLMs, Deep Learning
-- Skills: Python, C++, FastAPI, Docker, YOLO, PyTorch, LangChain
-- Currently doing: FAST-SF fellowship at NIT Puducherry (edge AI surveillance)
-- Looking for: Government jobs (technical/IT cadre), internships (AI/ML/software),
-  scholarships, fellowships, hackathons, research opportunities, competitions
+- Home state: West Bengal
+- CGPA: 8.9/10
+- Interests: Backend Development, Full-Stack Development, Systems Programming (Rust/C), Web3 (Solana), Distributed Systems, Open Source
+- Skills: TypeScript, JavaScript, Rust, C, Python, React, Next.js, Express.js, Axum, PostgreSQL, MongoDB, Prisma, Docker, WebSockets, Solana, Anchor
+- Experience:
+  - Built full-stack, systems, and Web3 applications
+  - 11 merged open-source contributions (Django & OWASP Nest)
+- Looking for: Government jobs (technical/IT cadre), internships (dev roles),
+  scholarships, fellowships, research opportunities
 - NOT interested in: MBA, law, medical, agriculture, arts/humanities-only roles,
   sales/marketing/HR internships, content writing roles
 """
@@ -783,13 +785,20 @@ def fetch_governance_ai():
 
 # Keywords indicating tech/CS/research relevance (used as fallback when LLM is down)
 RELEVANT_KEYWORDS = [
-    "software", "developer", "comput", "cse", "data scien", "data analy",
-    "machine learning", "deep learning", " ai ", "a.i", "artificial intelligence",
-    " ml ", "ml ", "nlp", "computer vision", "llm", "python", "java", "c++",
+    "rust", "golang", "go ", "backend", "full stack",
+    "distributed systems", "systems", "compiler",
+    "operating systems", "linux", "kernel",
+    "network", "database", "postgres",
+    "websocket", "api", "node", "express",
+    "react", "next.js", "typescript",
+    "solana", "anchor", "blockchain", "web3",
+    "smart contract", "infrastructure",
+    "platform engineer", "sre", "site reliability",
+    "software", "developer", "comput", "cse", "python", "java", "c++",
     "web dev", "app dev", "android", "ios", "full stack", "backend", "frontend",
     "programmer", "programming", "coding", "cyber", "security", "cloud",
     "engineer", "engineering", "b.tech", "b.e", "btech", "iot", "robotics",
-    "research", "jrf", "technolog", "information technology",
+    "research", "technolog", "information technology",
     "embedded", "vlsi", "electronics", "blockchain", "devops", "analytics",
 ]
 
@@ -848,10 +857,10 @@ OPPORTUNITIES:
 {listings_text}
 
 SCORING GUIDE:
-- 9-10: Perfect fit (AI/ML, software, data science, CS research, tech fellowship/scholarship matching their skills)
-- 6-8: Good fit (general software/engineering/tech role, coding hackathon, eligible engineering scholarship)
-- 3-5: Weak/uncertain fit (tangentially technical, or eligibility unclear)
-- 0-2: Not relevant (sales, marketing, HR, content/video, non-tech, MBA/medical/law, needs PhD/PG, ineligible)
+9-10: Backend, Full-Stack, Systems (Rust/C/C++), Web3, Software Engineering, Open Source
+7-8: General software engineering, DevOps, Cloud, Infrastructure, Distributed Systems
+5-6: Technical fellowships, government IT jobs, engineering scholarships
+0-3: Non-technical, sales, HR, marketing, customer support, etc.
 
 Respond with ONLY a JSON object mapping each opportunity number to its score:
 {{"scores": {{"1": 9, "2": 2, "3": 7}}}}

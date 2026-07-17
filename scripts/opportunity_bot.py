@@ -53,8 +53,16 @@ USER_PROFILE = """
 - Experience:
   - Built full-stack, systems, and Web3 applications
   - 11 merged open-source contributions (Django & OWASP Nest)
-- Looking for: Government jobs (technical/IT cadre), internships (dev roles),
-  scholarships, fellowships, research opportunities
+- Looking for:
+  - Software Engineering internships
+  - Backend internships
+  - Full-Stack internships
+  - Systems (Rust/C/C++) internships
+  - Web3/Solana internships
+  - Open Source programs
+  - Technical fellowships
+  - Government technical/IT jobs
+  - Scholarships
 - NOT interested in: MBA, law, medical, agriculture, arts/humanities-only roles,
   sales/marketing/HR internships, content writing roles
 """
